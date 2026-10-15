@@ -1,11 +1,8 @@
-
-
 {
   "rewrites": [
     { "source": "/", "destination": "/api/dashboard" },
     { "source": "/login", "destination": "/api/login" },
     { "source": "/profile", "destination": "/api/profile-page" },
     { "source": "/reset", "destination": "/api/reset" }
-  ],
-  "crons": [{ "path": "/api/scan?limit=20", "schedule": "0 5 * * *" }]
+  ]
 }
