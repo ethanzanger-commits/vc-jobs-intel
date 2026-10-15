@@ -1,3 +1,5 @@
+
+
 {
   "rewrites": [
     { "source": "/", "destination": "/api/dashboard" },
@@ -5,6 +7,5 @@
     { "source": "/profile", "destination": "/api/profile-page" },
     { "source": "/reset", "destination": "/api/reset" }
   ],
-  "functions": { "api/*.js": { "maxDuration": 60 } },
   "crons": [{ "path": "/api/scan?limit=20", "schedule": "0 5 * * *" }]
 }
