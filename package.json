@@ -1,12 +1,10 @@
 {
-  "name": "vc-jobs-intel",
-  "version": "0.1.0",
+  "name": "cv-job-match",
+  "version": "1.0.0",
   "private": true,
   "type": "module",
   "engines": { "node": ">=20" },
-  "scripts": {
-    "site-check": "node tools/site-check/check.mjs",
-    "test": "node --test",
-    "scan": "node src/scan.mjs"
-  }
+  "scripts": { "test": "node --test tests/*.test.mjs" },
+  "dependencies": { "mammoth": "^1.8.0", "unpdf": "^0.12.0" },
+  "devDependencies": { "esbuild": "^0.25.0" }
 }
