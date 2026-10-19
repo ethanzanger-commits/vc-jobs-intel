@@ -1338,7 +1338,7 @@ async function importCompanies(db, items, { now = (/* @__PURE__ */ new Date()).t
         continue;
       }
       const ev = httpUrl(inv.evidence_url);
-      await db.rest("vc_company_relationships", { method: "POST", body: [{ vc_firm_id: vid, company_id: co.id, evidence_url: ev, status: ev ? "verified" : "unverified", verified_at: ev ? now : null }] });
+      await db.rest("vc_company_relationships", { method: "POST", body: [{ vc_firm_id: vid, company_id: co.id, evidence_url: ev, status: ev && inv.verify !== false ? "verified" : "unverified", verified_at: ev && inv.verify !== false ? now : null }] });
       rep.links_created++;
     }
   }
@@ -1408,6 +1408,20 @@ async function politeGet(url, { fetchImpl, hops = 3 }) {
   }
   throw new HarvestError("Too many redirects.");
 }
+function boardsInHtml(html, pageUrl) {
+  const found = /* @__PURE__ */ new Map(), unsupported = /* @__PURE__ */ new Map();
+  const consider = (str) => {
+    const d = detectAts(str, "");
+    if (!d) return;
+    const key = `${d.adapter}:${d.identifier.toLowerCase()}`;
+    if (d.supported) {
+      if (!found.has(key)) found.set(key, { adapter: d.adapter, identifier: d.identifier, name: prettyName(d.identifier), source: pageUrl });
+    } else if (!unsupported.has(key)) unsupported.set(key, { adapter: d.adapter, identifier: d.identifier });
+  };
+  for (const m of html.matchAll(/(?:href|src|data-[a-z-]+|content)=["']([^"']+)["']/gi)) consider(m[1].replace(/&amp;/g, "&"));
+  for (const m of html.matchAll(/https?:\/\/[^\s"'<>)\\]+/gi)) consider(m[0]);
+  return { boards: [...found.values()], unsupported: [...unsupported.values()] };
+}
 async function harvestBoards(pageUrl, { fetchImpl = fetch } = {}) {
   const u0 = await assertPublicUrl(pageUrl);
   try {
@@ -1420,22 +1434,12 @@ async function harvestBoards(pageUrl, { fetchImpl = fetch } = {}) {
   const { r, url } = await politeGet(u0.href, { fetchImpl });
   if (!r.ok) throw new HarvestError(`The page answered with HTTP ${r.status}.`);
   const html = (await r.text()).slice(0, MAX_HTML);
-  const found = /* @__PURE__ */ new Map(), unsupported = /* @__PURE__ */ new Map();
-  const consider = (s) => {
-    const d = detectAts(s, "");
-    if (!d) return;
-    const key = `${d.adapter}:${d.identifier.toLowerCase()}`;
-    if (d.supported) {
-      if (!found.has(key)) found.set(key, { adapter: d.adapter, identifier: d.identifier, name: prettyName(d.identifier), source: url.href });
-    } else if (!unsupported.has(key)) unsupported.set(key, { adapter: d.adapter, identifier: d.identifier });
-  };
-  for (const m of html.matchAll(/(?:href|src|data-[a-z-]+|content)=["']([^"']+)["']/gi)) consider(m[1].replace(/&amp;/g, "&"));
-  for (const m of html.matchAll(/https?:\/\/[^\s"'<>)\\]+/gi)) consider(m[0]);
-  const boards = [...found.values()].slice(0, 300);
+  const { boards: allBoards, unsupported: unsup } = boardsInHtml(html, url.href);
+  const boards = allBoards.slice(0, 300);
   return {
     page: url.href,
     boards,
-    unsupported: [...unsupported.values()].slice(0, 50),
+    unsupported: unsup.slice(0, 50),
     note: boards.length ? null : "No company job-board links were found in this page\u2019s HTML. Many VC pages load their company list with JavaScript, so nothing is visible to us. Paste the companies\u2019 careers links instead."
   };
 }
@@ -1469,6 +1473,284 @@ function toImportItems(entries, { vc, evidence_url } = {}) {
     items.push(item);
   }
   return items;
+}
+
+// src/jobs/discover.mjs
+import net2 from "node:net";
+var MAX_HTML2 = 15e5;
+var SLD = /* @__PURE__ */ new Set(["co.il", "org.il", "ac.il", "net.il", "co.uk", "org.uk", "com.au", "co.jp", "com.br", "co.nz", "co.za", "com.tr", "co.in"]);
+var EXCLUDE = new Set("linkedin.com twitter.com x.com facebook.com instagram.com youtube.com youtu.be medium.com github.com crunchbase.com techcrunch.com google.com apple.com vimeo.com calcalist.co.il globes.co.il forbes.com bloomberg.com reuters.com wsj.com nytimes.com businesswire.com prnewswire.com substack.com spotify.com wikipedia.org cloudflare.com wixstatic.com squarespace.com typeform.com calendly.com hubspot.com mailchimp.com notion.so airtable.com greenhouse.io lever.co ashbyhq.com workable.com getro.com consider.com linktr.ee bit.ly t.co goo.gl tiktok.com pinterest.com snapchat.com t.me whatsapp.com wa.me comeet.com comeet.co theverge.com wired.com ynet.co.il themarker.com geektime.co.il".split(" "));
+var INFRA = ["cloudfront.net", "amazonaws.com", "googleapis.com", "gstatic.com", "googletagmanager.com", "google-analytics.com", "doubleclick.net", "w3.org", "schema.org", "jsdelivr.net", "cloudflare.com", "unpkg.com", "fontawesome.com", "facebook.net", "hotjar.com", "segment.com", "sentry.io", "typekit.net", "wp.com", "wordpress.org", "gravatar.com", "youtube-nocookie.com", "webflow.io", "framer.com", "vercel.app", "netlify.app", "squarespace.com", "wixsite.com", "cdn.prod.website-files.com", "website-files.com", "imgix.net", "cloudinary.com", "sanity.io", "contentful.com", "ctfassets.net", "prismic.io", "hs-scripts.com", "hsforms.com", "intercom.io", "zendesk.com", "stripe.com", "paypal.com", "apple.com", "microsoft.com", "mozilla.org", "creativecommons.org"];
+var junkHost = (k) => EXCLUDE.has(k) || INFRA.some((d) => k === d || k.endsWith("." + d)) || [...EXCLUDE].some((d) => k.endsWith("." + d));
+var CAREER = /(careers?|jobs?|join[- ]us|join[- ]our[- ]team|hiring|work[- ]with[- ]us|open[- ](positions?|roles?)|opportunit)/i;
+var PORTFOLIO = /(portfolio|companies|startups|investments|founders)/i;
+var SKIP_EXT = /\.(pdf|jpe?g|png|gif|svg|webp|zip|mp4|mp3|docx?|xlsx?)(\?|$)/i;
+function siteKey(u) {
+  const h = u.hostname.replace(/^www\./, "").toLowerCase();
+  if (net2.isIP(h)) return u.host;
+  const p = h.split(".");
+  if (p.length <= 2) return h;
+  return SLD.has(p.slice(-2).join(".")) ? p.slice(-3).join(".") : p.slice(-2).join(".");
+}
+function extractLinks(html, base) {
+  const out = [];
+  for (const m of html.matchAll(/<a\b[^>]*?href=["']([^"'#][^"']*)["'][^>]*>([\s\S]*?)<\/a>/gi)) {
+    let u;
+    try {
+      u = new URL(m[1].replace(/&amp;/g, "&"), base);
+    } catch {
+      continue;
+    }
+    if (!/^https?:$/.test(u.protocol) || SKIP_EXT.test(u.pathname)) continue;
+    out.push({ url: u, text: m[2].replace(/<[^>]*>/g, " ").replace(/\s+/g, " ").trim().slice(0, 100) });
+  }
+  return out;
+}
+function urlsInSource(html) {
+  const out = [];
+  const seen = /* @__PURE__ */ new Set();
+  for (const m of html.matchAll(/https?:\/\/[^\s"'<>\\)]+/gi)) {
+    let u;
+    try {
+      u = new URL(m[0].replace(/[,;.]+$/, ""));
+    } catch {
+      continue;
+    }
+    if (SKIP_EXT.test(u.pathname) || seen.has(u.origin)) continue;
+    seen.add(u.origin);
+    out.push(u);
+  }
+  return out;
+}
+function sitemapUrls(xml) {
+  return [...xml.matchAll(/<loc>\s*([^<\s]+)\s*<\/loc>/gi)].map((m) => m[1].replace(/&amp;/g, "&"));
+}
+var DETAIL = /\/(portfolio|companies|company|startups|investments)\/[^/]+\/?$/i;
+function companyName(html, fallback) {
+  const og = html.match(/<meta[^>]+property=["']og:site_name["'][^>]+content=["']([^"']{2,80})["']/i)?.[1];
+  const title = html.match(/<title[^>]*>([\s\S]{1,200}?)<\/title>/i)?.[1];
+  const cand = (og ?? title?.split(/\s[|\-–—·:]\s|[|:]/)[0] ?? "").replace(/&amp;/g, "&").replace(/\s+/g, " ").trim();
+  return cand.length >= 2 && cand.length <= 60 && !/^(home|welcome|homepage|index)$/i.test(cand) ? cand : prettyName(fallback);
+}
+var isOwnBoard = (identifier, vcHost) => {
+  const stem = vcHost.split(".")[0].replace(/[-_]/g, "");
+  return stem.length >= 4 && identifier.toLowerCase().replace(/[-_]/g, "").includes(stem);
+};
+async function fetchHtml(url, ctx) {
+  try {
+    const u = await assertPublicUrl(url);
+    if (!ctx.robots.has(u.origin)) {
+      let allow = () => true;
+      try {
+        const { r: r2 } = await politeGet(`${u.origin}/robots.txt`, { fetchImpl: ctx.fetchImpl });
+        if (r2.status >= 500) allow = () => false;
+        else if (r2.ok) allow = parseRobots(await r2.text());
+      } catch {
+      }
+      ctx.robots.set(u.origin, allow);
+    }
+    if (!ctx.robots.get(u.origin)(u.pathname || "/")) return { ok: false, why: "robots.txt disallows it" };
+    const { r, url: fu } = await politeGet(u.href, { fetchImpl: ctx.fetchImpl });
+    if (!r.ok) return { ok: false, why: `HTTP ${r.status}` };
+    return { ok: true, html: (await r.text()).slice(0, MAX_HTML2), url: fu };
+  } catch (e) {
+    return { ok: false, why: e.message?.slice(0, 120) || "could not load" };
+  }
+}
+async function processVcSite(db, t, firm, ctx) {
+  const home = await fetchHtml(t.url, ctx);
+  if (!home.ok) return { status: "failed", note: `Could not load the VC website (${home.why}). Check the address in the VC list.` };
+  const vcKey = siteKey(home.url), vcHost = home.url.hostname.replace(/^www\./, "");
+  const links = extractLinks(home.html, home.url).filter((l) => siteKey(l.url) === vcKey);
+  const uniq = (arr) => [...new Map(arr.map((l) => [l.url.origin + l.url.pathname.replace(/\/$/, ""), l])).values()];
+  let portfolio = uniq(links.filter((l) => PORTFOLIO.test(l.text + " " + l.url.pathname) && !CAREER.test(l.url.pathname))).slice(0, 4).map((l) => l.url.href);
+  const jobsPages = uniq(links.filter((l) => CAREER.test(l.text + " " + l.url.pathname) || /talent/i.test(l.url.pathname))).slice(0, 2).map((l) => l.url.href);
+  if (!portfolio.length) for (const path of ["/portfolio", "/companies", "/portfolio-companies", "/startups"]) {
+    const p = await fetchHtml(new URL(path, home.url).href, ctx);
+    if (p.ok) {
+      portfolio.push(p.url.href);
+      break;
+    }
+  }
+  const boards = /* @__PURE__ */ new Map(), sites = /* @__PURE__ */ new Map();
+  let pages = 0;
+  for (const pu of portfolio) {
+    const pg = pu === home.url.href ? home : await fetchHtml(pu, ctx);
+    if (!pg.ok) continue;
+    pages++;
+    for (const b of boardsInHtml(pg.html, pg.url.href).boards) if (!isOwnBoard(b.identifier, vcHost)) boards.set(`${b.adapter}:${b.identifier.toLowerCase()}`, { ...b, evidence: pg.url.href });
+    for (const l of extractLinks(pg.html, pg.url)) {
+      const k = siteKey(l.url);
+      if (k === vcKey || junkHost(k)) continue;
+      if (!sites.has(k)) sites.set(k, { url: l.url.origin + "/", evidence: pg.url.href });
+    }
+    for (const u of urlsInSource(pg.html)) {
+      const k = siteKey(u);
+      if (k === vcKey || junkHost(k)) continue;
+      if (!sites.has(k)) sites.set(k, { url: u.origin + "/", evidence: pg.url.href });
+    }
+  }
+  const capNow = Math.max(1, Math.min(300, Number(t.cap) || 80));
+  let viaSitemap = 0;
+  if (sites.size < 5) {
+    const sm = await fetchHtml(new URL("/sitemap.xml", home.url).href, ctx);
+    if (sm.ok) {
+      let locs = sitemapUrls(sm.html);
+      if (/<sitemapindex/i.test(sm.html)) {
+        const kids = locs.filter((u) => /(portfolio|compan|startup|investment)/i.test(u)).slice(0, 3);
+        locs = [];
+        for (const kUrl of kids) {
+          const c = await fetchHtml(kUrl, ctx);
+          if (c.ok) locs.push(...sitemapUrls(c.html));
+        }
+      }
+      for (const loc of locs) {
+        let u;
+        try {
+          u = new URL(loc);
+        } catch {
+          continue;
+        }
+        if (siteKey(u) !== vcKey || !DETAIL.test(u.pathname) || sites.size >= capNow) continue;
+        const key = "detail:" + u.href;
+        if (!sites.has(key)) {
+          sites.set(key, { url: u.href, evidence: u.href });
+          viaSitemap++;
+        }
+      }
+    }
+  }
+  for (const ju of jobsPages) {
+    const jp = await fetchHtml(ju, ctx);
+    if (!jp.ok) continue;
+    const bs = boardsInHtml(jp.html, jp.url.href).boards.filter((b) => !isOwnBoard(b.identifier, vcHost));
+    if (bs.length >= 3) {
+      pages++;
+      for (const b of bs) boards.set(`${b.adapter}:${b.identifier.toLowerCase()}`, { ...b, evidence: jp.url.href });
+    }
+  }
+  let imported = 0;
+  if (boards.size) {
+    const items = [...boards.values()].map((b) => ({ name: b.name, ats: { adapter: b.adapter, identifier: b.identifier }, investors: [{ vc: firm.name, evidence_url: b.evidence, verify: false }] }));
+    imported = (await importCompanies(db, items)).companies_created;
+  }
+  const cap = Math.max(1, Math.min(300, Number(t.cap) || 80));
+  const targets = [...sites.values()].slice(0, cap).map((s) => ({ vc_firm_id: t.vc_firm_id, kind: "company_site", url: s.url, evidence_url: s.evidence }));
+  for (let i = 0; i < targets.length; i += 100) await db.rest("discovery_targets?on_conflict=vc_firm_id,url", { method: "POST", body: targets.slice(i, i + 100), prefer: "resolution=ignore-duplicates,return=minimal" });
+  const note = `pages read: ${pages}; boards found directly: ${boards.size} (${imported} new companies); company sites queued: ${targets.length}${sites.size > cap ? ` of ${sites.size} (cap ${cap})` : ""}${viaSitemap ? `; via sitemap: ${viaSitemap}` : ""}`;
+  if (!pages && !viaSitemap) return { status: "no_board", note: "No readable portfolio page found (it may load with JavaScript). Use Quick add for this VC." };
+  return { status: "done", note };
+}
+async function processCompanySite(db, t, firm, ctx) {
+  const home = await fetchHtml(t.url, ctx);
+  if (!home.ok) return { status: "failed", note: `Could not load the company site (${home.why}).` };
+  const base = home.url, ck = siteKey(base);
+  if (firm.website && /^https?:\/\//i.test(firm.website) && ck === siteKey(new URL(firm.website))) {
+    const ext = extractLinks(home.html, base).filter((l) => siteKey(l.url) !== ck && !junkHost(siteKey(l.url)));
+    const best = ext.find((l) => /(website|visit|www|site|\.com|\.io|\.co)/i.test(l.text)) ?? ext[0] ?? (urlsInSource(home.html).find((u) => siteKey(u) !== ck && !junkHost(siteKey(u))) && { url: urlsInSource(home.html).find((u) => siteKey(u) !== ck && !junkHost(siteKey(u))) });
+    if (!best) return { status: "no_board", note: "No company website found on this VC page." };
+    await db.rest("discovery_targets?on_conflict=vc_firm_id,url", { method: "POST", body: [{ vc_firm_id: t.vc_firm_id, kind: "company_site", url: best.url.origin + "/", evidence_url: t.url }], prefer: "resolution=ignore-duplicates,return=minimal" });
+    return { status: "done", note: `VC company page -> ${best.url.origin}` };
+  }
+  let boards = boardsInHtml(home.html, base.href).boards;
+  const tried = /* @__PURE__ */ new Set([base.href]);
+  let careersUrl = null;
+  if (!boards.length) {
+    const cands = extractLinks(home.html, base).filter((l) => CAREER.test(l.text + " " + l.url.pathname) && siteKey(l.url) === ck).map((l) => l.url.href);
+    for (const c of [...new Set(cands)].slice(0, 2)) {
+      tried.add(c);
+      const p = await fetchHtml(c, ctx);
+      if (!p.ok) continue;
+      careersUrl ??= p.url.href;
+      boards = boardsInHtml(p.html, p.url.href).boards;
+      if (boards.length) break;
+    }
+  }
+  if (!boards.length) for (const path of ["/careers", "/jobs"]) {
+    const u = new URL(path, base).href;
+    if (tried.has(u)) continue;
+    tried.add(u);
+    const p = await fetchHtml(u, ctx);
+    if (!p.ok) continue;
+    careersUrl ??= p.url.href;
+    boards = boardsInHtml(p.html, p.url.href).boards;
+    if (boards.length) break;
+  }
+  const name = companyName(home.html, base.hostname.replace(/^www\./, "").split(".")[0]);
+  const inv = [{ vc: firm.name, evidence_url: t.evidence_url, verify: false }];
+  if (boards.length) {
+    await importCompanies(db, [{ name, website: base.origin, ats: { adapter: boards[0].adapter, identifier: boards[0].identifier }, investors: inv }]);
+    return { status: "done", note: `${name}: ${boards[0].adapter}:${boards[0].identifier}` };
+  }
+  if (careersUrl) {
+    await importCompanies(db, [{ name, website: base.origin, careers_url: careersUrl, investors: inv }]);
+    return { status: "done", note: `${name}: careers page only (no supported job system detected)` };
+  }
+  return { status: "no_board", note: `${name}: no careers page found` };
+}
+async function startDiscovery(db, { scope = "israeli", max_per_vc = 80 } = {}) {
+  const firms = await db.all("vc_firms?select=id,name,firm_type,website");
+  const wanted = Array.isArray(scope) ? firms.filter((f) => scope.includes(f.name)) : scope === "all" ? firms : firms.filter((f) => f.firm_type === "israeli");
+  const cap = Math.max(1, Math.min(300, Math.round(Number(max_per_vc)) || 80));
+  const queued = [], skipped = [];
+  for (const f of wanted) {
+    if (!/^https?:\/\//i.test(f.website ?? "")) {
+      skipped.push({ vc: f.name, reason: "no website set" });
+      continue;
+    }
+    const [ex] = await db.rest(`discovery_targets?vc_firm_id=eq.${f.id}&kind=eq.vc_site&select=id`);
+    if (ex) await db.rest(`discovery_targets?id=eq.${ex.id}`, { method: "PATCH", body: { url: f.website, status: "pending", cap, note: null, updated_at: (/* @__PURE__ */ new Date()).toISOString() }, prefer: "return=minimal" });
+    else await db.rest("discovery_targets", { method: "POST", body: [{ vc_firm_id: f.id, kind: "vc_site", url: f.website, cap }], prefer: "return=minimal" });
+    queued.push(f.name);
+  }
+  return { queued, skipped };
+}
+async function discoverStep(db, { budgetMs = 4e4, concurrency = 6, fetchImpl = fetch, now = Date.now } = {}) {
+  const t0 = now();
+  const ctx = { fetchImpl, robots: /* @__PURE__ */ new Map() };
+  const firms = new Map((await db.all("vc_firms?select=id,name,website")).map((f) => [f.id, f]));
+  await db.rest(`discovery_targets?status=eq.working&updated_at=lt.${new Date(now() - 10 * 6e4).toISOString()}`, { method: "PATCH", body: { status: "pending" }, prefer: "return=minimal" });
+  const log = [];
+  let processed = 0;
+  while (now() - t0 < budgetMs) {
+    const pending = (await db.rest("discovery_targets?status=eq.pending&select=*&limit=60")).sort((a, b) => a.kind === b.kind ? String(a.created_at).localeCompare(String(b.created_at)) : a.kind === "vc_site" ? -1 : 1);
+    if (!pending.length) break;
+    const pick = pending[0].kind === "vc_site" ? pending.filter((p) => p.kind === "vc_site").slice(0, 2) : pending.slice(0, concurrency);
+    const claimed = await db.rest(`discovery_targets?status=eq.pending&id=in.(${pick.map((p) => `"${p.id}"`).join(",")})`, { method: "PATCH", body: { status: "working", updated_at: new Date(now()).toISOString() } });
+    await Promise.all(claimed.map(async (t) => {
+      const firm = firms.get(t.vc_firm_id) ?? { name: "Unknown" };
+      let r;
+      try {
+        r = t.kind === "vc_site" ? await processVcSite(db, t, firm, ctx) : await processCompanySite(db, t, firm, ctx);
+      } catch {
+        r = { status: "failed", note: "Unexpected error while reading this site." };
+      }
+      await db.rest(`discovery_targets?id=eq.${t.id}`, { method: "PATCH", body: { status: r.status, note: r.note.slice(0, 300), attempts: (t.attempts ?? 0) + 1, updated_at: new Date(now()).toISOString() }, prefer: "return=minimal" });
+      processed++;
+      log.push({ vc: firm.name, kind: t.kind, url: t.url, status: r.status, note: r.note });
+    }));
+  }
+  const left = await db.all("discovery_targets?status=in.(pending,working)&select=id");
+  return { processed, remaining: left.length, log: log.slice(-30) };
+}
+async function discoveryStatus(db) {
+  const [targets, firms, rels] = await Promise.all([db.all("discovery_targets?select=vc_firm_id,kind,status"), db.all("vc_firms?select=id,name,firm_type,website"), db.all("vc_company_relationships?select=vc_firm_id,status")]);
+  const by = {};
+  for (const t of targets) by[t.status] = (by[t.status] ?? 0) + 1;
+  return {
+    totals: by,
+    remaining: (by.pending ?? 0) + (by.working ?? 0),
+    vcs: firms.map((f) => {
+      const mine = targets.filter((t) => t.vc_firm_id === f.id), r = rels.filter((x) => x.vc_firm_id === f.id);
+      return { vc: f.name, type: f.firm_type, website: f.website ?? null, sites_found: mine.filter((t) => t.kind === "company_site").length, sites_done: mine.filter((t) => t.kind === "company_site" && t.status === "done").length, sites_no_board: mine.filter((t) => t.kind === "company_site" && t.status === "no_board").length, pending: mine.filter((t) => ["pending", "working"].includes(t.status)).length, links_unverified: r.filter((x) => x.status === "unverified").length, links_verified: r.filter((x) => x.status === "verified").length };
+    }).sort((a, b) => a.vc.localeCompare(b.vc))
+  };
+}
+async function verifyVc(db, vcName) {
+  const [f] = await db.rest(`vc_firms?name=eq.${encodeURIComponent(vcName)}&select=id`);
+  if (!f) return { ok: false, error: "unknown VC" };
+  const rows = await db.rest(`vc_company_relationships?vc_firm_id=eq.${f.id}&status=eq.unverified&evidence_url=not.is.null`, { method: "PATCH", body: { status: "verified", verified_at: (/* @__PURE__ */ new Date()).toISOString() } });
+  return { ok: true, verified: rows.length };
 }
 
 // src/metrics.mjs
@@ -1702,6 +1984,13 @@ $('go').onclick=async function(){var m=$('m');if(!t){m.className='msg err';m.tex
 function renderAdmin() {
   return shell("Admin", `<header><h1>Admin</h1><small>Catalog tools</small></header><main>
 <div class="card"><label for="tk">Admin token</label><input id="tk" type="password" autocomplete="off"><p class="hint">Kept only in this tab; never stored.</p></div>
+<div class="card"><h2>Discover everything (automatic)</h2>
+<p class="hint">Reads each VC's website, finds its companies, finds each company's job board and adds them. Keep this tab open: it works in small steps (the first run can take 30 to 60 minutes; the nightly job finishes anything left).</p>
+<label for="scope">Which VCs</label><select id="scope"><option value="israeli">All Israeli VCs</option><option value="all">All 27 VCs (global firms add many non-Israeli companies)</option></select>
+<label for="cap">Max companies per VC</label><input id="cap" type="number" value="80" min="1" max="300">
+<label style="font-weight:400"><input type="checkbox" id="scanafter" checked> Scan the jobs afterwards</label>
+<p><button id="disc" type="button">Start discovery</button> <button class="sec" id="stopdisc" type="button">Stop</button></p><div id="discmsg" class="msg" role="status"></div><div id="disclog" class="hint"></div></div>
+<div class="card"><h2>VC websites and results</h2><p class="hint">Fix any website that fails. Links found automatically are saved as <b>unverified</b> (with the page they came from as evidence). After spot-checking a VC, press Mark verified.</p><div id="vctable"></div></div>
 <div class="card"><h2>Quick add (easiest)</h2>
 <label for="vc">Which VC are these companies from?</label><select id="vc"><option value="">(no VC link)</option></select><p class="hint">The list loads after you enter the token above and leave that box.</p>
 <label for="ev">A page on that VC's website that lists these companies (optional)</label><input id="ev" placeholder="https://example-vc.com/portfolio"><p class="hint">Filled in = saved as <b>verified</b>. Empty = saved as <b>unverified</b>.</p>
@@ -1716,7 +2005,26 @@ function renderAdmin() {
 async function call(p,m,b){var r=await fetch(p,{method:m,headers:{'authorization':'Bearer '+$('tk').value,'content-type':'application/json'},body:b});var t=await r.text();$('out').textContent=r.status+' '+t}
 
 async function adm(p,b){var r=await fetch(p,{method:b===undefined?'GET':'POST',headers:{'authorization':'Bearer '+$('tk').value,'content-type':'application/json'},body:b===undefined?undefined:JSON.stringify(b)});var d={};try{d=await r.json()}catch(e){}return {ok:r.ok,status:r.status,data:d}}
-$('tk').onchange=async function(){var r=await adm('/api/admin/status');if(!r.ok)return;var v=$('vc');v.replaceChildren();var o=el('option',null,'(no VC link)');o.value='';v.append(o);(r.data.vcs||[]).forEach(function(n){var x=el('option',null,n);x.value=n;v.append(x)})};
+$('tk').onchange=async function(){loadVcTable();var r=await adm('/api/admin/status');if(!r.ok)return;var v=$('vc');v.replaceChildren();var o=el('option',null,'(no VC link)');o.value='';v.append(o);(r.data.vcs||[]).forEach(function(n){var x=el('option',null,n);x.value=n;v.append(x)})};
+
+var STOP=false;
+function dmsg(t,cls){var m=$('discmsg');m.className='msg'+(cls?' '+cls:'');m.textContent=t}
+async function loadVcTable(){var r=await adm('/api/admin/discover/status');if(!r.ok)return;var T=$('vctable');T.replaceChildren();
+ var sc=$('scope');while(sc.options.length>2)sc.remove(2);r.data.vcs.forEach(function(v){var o=el('option',null,'Only '+v.vc);o.value=v.vc;sc.append(o)});
+ var tb=table(['VC','Website','Sites found','With job board','No board','Unverified links',''],r.data.vcs.map(function(v){return [v.vc,'',v.sites_found,v.sites_done,v.sites_no_board,v.links_unverified,'']}));
+ r.data.vcs.forEach(function(v,i){var row=tb.rows[i+1];var inp=document.createElement('input');inp.value=v.website||'';inp.placeholder='https://...';inp.style.minWidth='160px';var sv=el('button','sec','Save');sv.type='button';sv.onclick=async function(){var a=await adm('/api/admin/vc-website',{vc:v.vc,website:inp.value});sv.textContent=a.ok?'Saved':'Error'};row.cells[1].append(inp,sv);
+  if(v.links_unverified){var vb=el('button','sec','Mark verified');vb.type='button';vb.onclick=async function(){var a=await adm('/api/admin/verify-vc',{vc:v.vc});vb.textContent=a.ok?(a.data.verified+' verified'):'Error'};row.cells[6].append(vb)}});
+ T.append(tb)}
+function logLine(l){var d=el('div',null,'['+l.status+'] '+l.vc+': '+l.note);$('disclog').prepend(d);while($('disclog').children.length>40)$('disclog').lastChild.remove()}
+$('stopdisc').onclick=function(){STOP=true;dmsg('Stopping after the current step...')};
+$('disc').onclick=async function(){STOP=false;$('disclog').replaceChildren();this.disabled=true;dmsg('Queuing VCs...');
+ var sv=$('scope').value;var st=await adm('/api/admin/discover/start',{scope:(sv==='israeli'||sv==='all')?sv:[sv],max_per_vc:Number($('cap').value)});
+ if(!st.ok){dmsg(st.data.error||'Could not start ('+st.status+')','err');this.disabled=false;return}
+ if(st.data.skipped.length)logLine({status:'skipped',vc:'No website set',note:st.data.skipped.map(function(x){return x.vc}).join(', ')});
+ var done=0,rem=1;while(!STOP&&rem>0){var s=await adm('/api/admin/discover/step',{});if(!s.ok){dmsg('Step failed ('+s.status+'): '+(s.data.error||''),'err');break}done+=s.data.processed;rem=s.data.remaining;s.data.log.forEach(logLine);dmsg('Discovery: '+done+' sites processed, '+rem+' left...')}
+ if(rem===0)dmsg('Discovery finished: '+done+' sites processed.','ok');
+ if(!STOP&&rem===0&&$('scanafter').checked){var stt=await adm('/api/admin/status');var n=Math.ceil(((stt.data&&stt.data.companies)||0)/10)+1;for(var i=0;i<n&&!STOP;i++){dmsg('Scanning jobs, round '+(i+1)+' of '+n+'...');var a=await adm('/api/admin/scan',{});if(!a.ok)break}dmsg(STOP?'Stopped.':'All done. Press Analytics to see what you collect now.','ok')}
+ this.disabled=false;loadVcTable()};
 function addMsg(t,cls){var m=$('addres');m.className='msg'+(cls?' '+cls:'');m.textContent=t}
 function summary(d){return d.submitted+' submitted: '+d.companies_created+' new companies, '+d.companies_existing+' already there, '+d.links_created+' VC links added'+(d.errors&&d.errors.length?'. Problems: '+d.errors.join('; '):'.')}
 $('addlines').onclick=async function(){addMsg('Adding...');var r=await adm('/api/admin/quick-add',{vc:$('vc').value,evidence_url:$('ev').value,lines:$('lines').value});addMsg(r.ok?summary(r.data):(r.data.error||'Failed ('+r.status+')'),r.ok?'ok':'err')};
@@ -2005,6 +2313,69 @@ function makeHandlers(deps = {}) {
         fail(res, e);
       }
     },
+    "/api/admin/discover/start": async (req, res) => {
+      if (req.method !== "POST") return send(res, 405, { error: "POST only" });
+      try {
+        const d = db();
+        if (!await adminOk(req, res, d)) return;
+        const b = await readJson(req);
+        const scope = Array.isArray(b.scope) ? b.scope.map((x) => String(x).slice(0, 80)).slice(0, 40) : b.scope === "all" ? "all" : "israeli";
+        send(res, 200, await startDiscovery(d, { scope, max_per_vc: b.max_per_vc }));
+      } catch (e) {
+        fail(res, e);
+      }
+    },
+    "/api/admin/discover/step": async (req, res) => {
+      if (req.method !== "POST") return send(res, 405, { error: "POST only" });
+      try {
+        const d = db();
+        if (!await adminOk(req, res, d)) return;
+        send(res, 200, await discoverStep(d, { fetchImpl: deps.discoverFetch ?? fetch, budgetMs: deps.stepBudgetMs ?? 4e4 }));
+      } catch (e) {
+        fail(res, e);
+      }
+    },
+    "/api/admin/discover/status": async (req, res) => {
+      if (req.method !== "GET") return send(res, 405, { error: "GET only" });
+      try {
+        const d = db();
+        if (!await adminOk(req, res, d)) return;
+        send(res, 200, await discoveryStatus(d));
+      } catch (e) {
+        fail(res, e);
+      }
+    },
+    "/api/admin/verify-vc": async (req, res) => {
+      if (req.method !== "POST") return send(res, 405, { error: "POST only" });
+      try {
+        const d = db();
+        if (!await adminOk(req, res, d)) return;
+        const b = await readJson(req);
+        const r = await verifyVc(d, String(b.vc ?? "").slice(0, 80));
+        send(res, r.ok ? 200 : 400, r);
+      } catch (e) {
+        fail(res, e);
+      }
+    },
+    "/api/admin/vc-website": async (req, res) => {
+      if (req.method !== "POST") return send(res, 405, { error: "POST only" });
+      try {
+        const d = db();
+        if (!await adminOk(req, res, d)) return;
+        const b = await readJson(req);
+        let w = String(b.website ?? "").trim();
+        if (w && !/^https?:\/\//i.test(w)) w = "https://" + w;
+        try {
+          if (w) new URL(w);
+        } catch {
+          return send(res, 400, { error: "That is not a valid web address." });
+        }
+        const rows = await d.rest(`vc_firms?name=eq.${encodeURIComponent(String(b.vc ?? "").slice(0, 80))}`, { method: "PATCH", body: { website: w || null } });
+        send(res, rows.length ? 200 : 400, rows.length ? { ok: true } : { error: "unknown VC" });
+      } catch (e) {
+        fail(res, e);
+      }
+    },
     "/api/admin/scan": async (req, res) => {
       if (req.method !== "POST") return send(res, 405, { error: "POST only" });
       try {
@@ -2026,7 +2397,7 @@ function makeHandlers(deps = {}) {
         const by = {};
         for (const c of cos) by[c.hiring_status] = (by[c.hiring_status] ?? 0) + 1;
         const vcs = (await d.all("vc_firms?select=name")).map((v) => v.name).sort();
-        send(res, 200, { companies: cos.length, by_status: by, open_jobs: cos.reduce((n, c) => n + (c.open_jobs_count ?? 0), 0), email_enabled: emailEnabled(), vcs });
+        send(res, 200, { companies: cos.length, unscanned: by.not_yet_scanned ?? 0, by_status: by, open_jobs: cos.reduce((n, c) => n + (c.open_jobs_count ?? 0), 0), email_enabled: emailEnabled(), vcs });
       } catch (e) {
         fail(res, e);
       }
@@ -2069,7 +2440,8 @@ function makeHandlers(deps = {}) {
         const d = db();
         await purge(d);
         const limit = Math.min(Number(new URL(req.url, "http://x").searchParams.get("limit") ?? 20) || 20, 50);
-        send(res, 200, await runScanJob({ db: d, limit, delayMs: 300, ...deps.scanDeps }));
+        const disc = await discoverStep(d, { fetchImpl: deps.discoverFetch ?? fetch, budgetMs: deps.cronDiscoverMs ?? 2e4 }).catch(() => ({ processed: 0, remaining: 0 }));
+        send(res, 200, { discovery: { processed: disc.processed, remaining: disc.remaining }, ...await runScanJob({ db: d, limit, delayMs: 300, ...deps.scanDeps }) });
       } catch (e) {
         fail(res, e);
       }
